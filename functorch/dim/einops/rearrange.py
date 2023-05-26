@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 __all__ = ["rearrange"]
 
-dims = _C.dims
+dims, dimlists = _C.dims, _C.dimlists
 
 
 @functools.lru_cache(256)
@@ -54,14 +54,16 @@ def _create_rearrange_callable(
                 f"Number of dimensions in pattern ({pattern_ndim}) must be equal to the number of dimensions in "
                 f"the tensor ({tensor_ndim})"
             )
-    n_dims = n_named_dims + n_ellipsis_dims + n_anon_dims
+    n_dims = n_anon_dims + n_named_dims
+    total_n_dims = n_dims + n_ellipsis_dims
 
-    if n_dims == 0:
+    if total_n_dims == 0:
         # an identity rearrangement on a 0-dimension tensor
         return lambda tensor: tensor
 
     first_class_dims: Tuple[Dim, ...] = (dims(n_dims),) if n_dims == 1 else dims(n_dims)
-    identifier_dim_map: Dict[Union[str, AnonymousAxis], Tuple[Dim, ...]] = {}
+    dx = dims(1)
+    identifier_dim_map: Dict[Union[str, AnonymousAxis], Dim] = {}
     anon_axes: List[AnonymousAxis] = []
 
     # map the left-hand side identifiers to first class dims
@@ -71,19 +73,18 @@ def _create_rearrange_callable(
             for identifier in dimension:
                 # non-unitary anon axes are not allowed in rearrange & unitary anon axes are represented as empty lists
                 assert isinstance(identifier, str)
-                identifier_dim_map[identifier] = (first_class_dims[dims_i],)
+                identifier_dim_map[identifier] = first_class_dims[dims_i]
                 dims_i += 1
             if not dimension:
                 # unitary anonymous axis
                 anon_axis = AnonymousAxis("1")
-                identifier_dim_map[anon_axis] = (first_class_dims[dims_i],)
+                identifier_dim_map[anon_axis] = first_class_dims[dims_i]
                 anon_axes.append(anon_axis)
                 dimension.append(anon_axis)
                 dims_i += 1
         elif dimension == _ellipsis:
             identifier = _ellipsis
-            identifier_dim_map[identifier] = tuple(first_class_dims[dims_i + j] for j in range(n_ellipsis_dims))
-            dims_i += n_ellipsis_dims
+            identifier_dim_map[identifier] = dx
         else:
             raise ValueError(f'Unexpected dimension: {dimension}')
 
@@ -94,25 +95,26 @@ def _create_rearrange_callable(
         dim_composition: List[Union[Dim, Tuple[Dim, ...]]] = []
         for dimension in composition:
             if isinstance(dimension, list):
-                dim_composition.append(tuple(dim for identifier in dimension for dim in identifier_dim_map[identifier]))
+                dim_composition.append(tuple(identifier_dim_map[identifier] for identifier in dimension))
             elif dimension == _ellipsis:
-                dim_composition.extend(identifier_dim_map[_ellipsis])
+                dim_composition.append(identifier_dim_map[_ellipsis])
             else:
                 raise ValueError(f'Unexpected dimension: {dimension}')
         return dim_composition
 
     left_dims = composition_to_dims(left.composition)
     right_dims = composition_to_dims(right.composition)
-    anon_dims = tuple(identifier_dim_map[axis][0] for axis in anon_axes)
+    anon_dims = tuple(identifier_dim_map[axis] for axis in anon_axes)
     specified_lengths = tuple(
-        (identifier_dim_map[axis][0], length) for axis, length in axes_lengths.items()
+        (identifier_dim_map[axis], length) for axis, length in axes_lengths.items()
     )
 
     custom_rearrange_callable_name = "do_rearrange"
     custom_rearrange_callable_code = (
         (
             f"def {custom_rearrange_callable_name}(tensor):\n"
-            f"    {comma_sepparate(first_class_dims)} = dims({n_dims})\n"
+            + (f"    {comma_sepparate(first_class_dims)} = dims({n_dims})\n" if n_dims else "")
+            + ("    dx = dimlists(1)\n" if left.has_ellipsis else "")
             + (
                 f"    for dim, length in {specified_lengths}:\n"
                 "        dim.size = length\n"
