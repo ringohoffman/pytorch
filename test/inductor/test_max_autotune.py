@@ -1,6 +1,8 @@
 # Owner(s): ["module: inductor"]
 
 import torch
+torch.cuda.init()
+
 from torch import multiprocessing as mp
 from torch._dynamo.test_case import run_tests, TestCase
 from torch._inductor import config
@@ -147,8 +149,65 @@ class TestDoBench(TestCase):
         a = torch.randn(100, 10).cuda()
         b = torch.randn(10, 100).cuda()
 
-        with config.patch({"max_autotune": True, "autotune_in_subproc": True}):
+        with config.patch(
+            {
+                "max_autotune": True,
+                "autotune_in_subproc": True,
+                "max_autotune_gemm_backends": max_autotune_gemm_backends,
+            }
+        ):
             torch.compile(mm, dynamic=dynamic)(a, b)
+
+    @parametrize("dynamic", (False,))
+    @parametrize("max_autotune_gemm_backends", ("Aten,Triton,Cutlass",))
+    def test_max_autotune_multi_backends_regular_mm(
+        self, dynamic: bool, max_autotune_gemm_backends: str
+    ):
+        """
+        Make sure autotuning mm in sub processes work without crashes.
+        """
+        print("enter")
+
+        def mm(a, b):
+            return a @ b
+
+        a = torch.randn(100, 10).cuda().half()
+        b = torch.randn(10, 100).cuda().half()
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "autotune_in_subproc": True,
+                "max_autotune_gemm_backends": max_autotune_gemm_backends,
+            }
+        ):
+            torch.compile(mm, dynamic=dynamic)(a, b)
+
+    @parametrize("dynamic", (False,))
+    # @parametrize("max_autotune_gemm_backends", ("Aten,Triton,Cutlass",))
+    @parametrize("max_autotune_gemm_backends", ("Cutlass",))
+    def test_max_autotune_multi_backends_mm_bias(
+        self, dynamic: bool, max_autotune_gemm_backends: str
+    ):
+        """
+        Make sure autotuning mm in sub processes work without crashes.
+        """
+
+        def mm(a, b, bias):
+            return torch.nn.functional.linear(a, b, bias)
+
+        a = torch.randn(2048, 51456).cuda().half()
+        b = torch.randn(4096, 51456).cuda().half()
+        bias = torch.randn(4096).cuda().half()
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "autotune_in_subproc": True,
+                "max_autotune_gemm_backends": max_autotune_gemm_backends,
+            }
+        ):
+            torch.compile(mm, dynamic=dynamic)(a, b, bias)
 
     @parametrize("dynamic", (False, True))
     def test_max_autotune_addmm(self, dynamic):
@@ -236,3 +295,5 @@ class TestDoBench(TestCase):
 if __name__ == "__main__":
     if HAS_CUDA:
         run_tests()
+    else:
+        print("HAS_CUDA == false")

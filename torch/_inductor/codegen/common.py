@@ -557,7 +557,7 @@ class KernelArgs:
                 continue
             outer = inplaced.other_names[-1]
             inner = inplaced.inner_name
-            dtype = buffer_types[outer]
+            dtype = buffer_types.get(outer, V.graph.get_dtype(outer))
             cpp_dtype = DTYPE_TO_CPP[dtype]
             arg_defs.append(f"{cpp_dtype}* {inner}")
             call_args.append(self.wrap_ptr_arg(outer, dtype))
@@ -565,7 +565,7 @@ class KernelArgs:
         for outer, inner in self.input_buffers.items():
             if outer in self.inplace_buffers:
                 continue
-            dtype = buffer_types[outer]
+            dtype = buffer_types.get(outer, V.graph.get_dtype(outer))
             cpp_dtype = DTYPE_TO_CPP[dtype]
             arg_defs.append(f"const {cpp_dtype}* {inner}")
             call_args.append(self.wrap_ptr_arg(outer, dtype))
@@ -573,7 +573,7 @@ class KernelArgs:
         for outer, inner in self.output_buffers.items():
             if outer in self.inplace_buffers or inner == "REMOVED":
                 continue
-            dtype = buffer_types[outer]
+            dtype = buffer_types.get(outer, V.graph.get_dtype(outer))
             cpp_dtype = DTYPE_TO_CPP[dtype]
             arg_defs.append(f"{cpp_dtype}* {inner}")
             call_args.append(self.wrap_ptr_arg(outer, dtype))
@@ -1010,3 +1010,15 @@ class OptimizationContext:
 
     # Load uint8 value as float32
     is_load_uint8_as_float: bool = False
+
+
+@functools.lru_cache(None)
+def jinja2_env():
+    try:
+        import jinja2
+
+        return jinja2.Environment(
+            undefined=jinja2.StrictUndefined,
+        )
+    except ImportError:
+        return None
