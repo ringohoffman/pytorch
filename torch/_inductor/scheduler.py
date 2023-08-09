@@ -386,7 +386,6 @@ class BaseSchedulerNode:
             if op == "extern_kernels.convolution":
                 assert len(inputs) == 2
 
-                # TODO(xmfan): handle transpose
                 return (
                     1
                     / gpu_flops
@@ -394,7 +393,7 @@ class BaseSchedulerNode:
                         x_shape=input_shapes[0],
                         w_shape=input_shapes[1],
                         out_shape=snode.node.get_size(),
-                        transposed=False,
+                        transposed=snode.node.kwargs.get('transposed', False),
                         _bias=None,
                         _stride=None,
                         _padding=None,
