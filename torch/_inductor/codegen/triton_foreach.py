@@ -6,7 +6,7 @@ from ..virtualized import V
 from .common import IndentedBuffer, Kernel
 from .triton import TritonKernel
 from .triton_utils import config_of, signature_of
-
+from typing import List, Any
 
 class ForeachKernel(Kernel):
     MAX_NUM_ARGS = 250  # number where I would no longer get triton errors
@@ -19,7 +19,7 @@ class ForeachKernel(Kernel):
 
         cur_count = 0
         partitions = []
-        cur_partition = []
+        cur_partition: List[Any] = []
         for node in nodes:
             read_writes = node.read_writes
             read_write_count = len(read_writes.reads) + len(read_writes.writes)
