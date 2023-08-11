@@ -8,7 +8,8 @@ def signature_of(arg, *, size_dtype: str):
     from triton.runtime.jit import JITFunction
 
     if isinstance(arg, TensorArg):
-        tye = JITFunction._type_of(arg.dtype)
+        arg_dtype = V.graph.name_to_dtype.get(arg.buffer, arg.dtype)
+        tye = JITFunction._type_of(arg_dtype)
         if V.graph.is_unspec_arg(arg.buffer):
             # had unwrapped 0d tensor as scalar
             new_tye = tye.lstrip("*")

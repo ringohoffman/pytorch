@@ -33,14 +33,22 @@ pexpr = PythonPrinter().doprint
 def buffer_reuse_key(node: ir.Buffer):
     size = node.get_size()
     stride = node.get_stride()
-    last_element = sympy_dot([s - 1 for s in size], stride)
-    return (
-        node.get_device(),
-        node.get_dtype(),
-        V.graph.sizevars.simplify(sympy_product(size)),
-        # Detect gaps in tensor storage caused by strides
-        V.graph.sizevars.size_hint(last_element),
-    )
+    if any([str(s) in V.graph.data_dep_symbol_to_expr_str for s in size]):
+        return (
+            node.get_device(),
+            node.get_dtype(),
+            str(size),
+            str(stride),
+        )
+    else:
+        last_element = sympy_dot([s - 1 for s in size], stride)
+        return (
+            node.get_device(),
+            node.get_dtype(),
+            V.graph.sizevars.simplify(sympy_product(size)),
+            # Detect gaps in tensor storage caused by strides
+            V.graph.sizevars.size_hint(last_element),
+        )
 
 
 def is_int(s: str):
@@ -212,6 +220,12 @@ class AllocateLine(MemoryPlanningLine):
 
     def codegen(self, code: IndentedBuffer):
         assert self.node.get_name() not in V.graph.removed_buffers
+        for s in self.node.get_size():
+            s_str = str(s)
+            if s_str in V.graph.data_dep_symbol_to_expr_str:
+                expr_str = V.graph.data_dep_symbol_to_expr_str[s_str]
+                assert expr_str is not None
+                code.writeline(f"{s_str} = {expr_str}")
         line = self.wrapper.make_buffer_allocation(self.node)
         code.writeline(line)
 
@@ -602,6 +616,9 @@ class WrapperCodeGen(CodeGen):
                 )
 
     def codegen_python_sizevar(self, x: Expr) -> str:
+        # If sizevar is an expected data-dependent symbol, then just use its string repr.
+        if str(x) in V.graph.data_dep_symbol_to_expr_str:
+            return pexpr(x)
         return pexpr(V.graph.sizevars.simplify(x))
 
     def codegen_sizevar(self, x: Expr) -> str:
@@ -764,7 +781,7 @@ class WrapperCodeGen(CodeGen):
     # The following methods are for memory management
     def make_buffer_allocation(self, buffer):
         device = buffer.get_device()
-        dtype = buffer.get_dtype()
+        dtype = V.graph.name_to_dtype.get(buffer.name, buffer.get_dtype())
         shape = tuple(buffer.get_size())
         stride = tuple(buffer.get_stride())
         return (

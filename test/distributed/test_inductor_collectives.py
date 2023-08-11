@@ -3,6 +3,7 @@ import functools
 import unittest
 from unittest.mock import patch
 import torch
+from contextlib import contextmanager
 from torch._C import FileCheck
 # for some reason importing functional collectives after dynamo breaks collectives handling!
 import torch.distributed._functional_collectives as _functional_collectives
@@ -22,6 +23,23 @@ from torch.testing._internal.common_distributed import (
 from torch._inductor.compile_fx import compile_fx as inductor_compile_fx
 from torch._inductor.utils import has_triton, run_and_get_triton_code
 import torch._dynamo.logging
+
+
+@contextmanager
+def _dynamo_dynamic_shapes():
+    dynamic_shapes_prev_value = torch._dynamo.config.dynamic_shapes
+    capture_dynamic_output_shape_ops_prev_value = torch._dynamo.config.capture_dynamic_output_shape_ops
+    capture_scalar_outputs_prev_value = torch._dynamo.config.capture_scalar_outputs
+    torch._dynamo.config.dynamic_shapes = True
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    torch._dynamo.config.capture_scalar_outputs = True
+    try:
+        yield
+    finally:
+        torch._dynamo.config.dynamic_shapes = dynamic_shapes_prev_value
+        torch._dynamo.config.capture_dynamic_output_shape_ops = capture_dynamic_output_shape_ops_prev_value
+        torch._dynamo.config.capture_scalar_outputs = capture_scalar_outputs_prev_value
+
 
 @requires_nccl()
 class TestCollectivesMultiProc(DynamoDistributedMultiProcTestCase):
@@ -212,6 +230,64 @@ class TestCollectivesMultiProc(DynamoDistributedMultiProcTestCase):
             eager_out = example(*inputs)
             compiled_fn = compile(example, inputs)
             inductor_out = compiled_fn(*inputs)
+            self.assertTrue(same(eager_out, inductor_out, tol=0.001))
+
+    @unittest.skipIf(not has_triton(), "Inductor+gpu needs triton and recent GPU arch")
+    @skip_if_lt_x_gpu(2)
+    # TODO: somehow inductor bg compile threads are causing hangs at exit with distributed work dtor
+    @patch.object(torch._inductor.config, "compile_threads", 1)
+    def test_all_to_all_single_inductor(self):
+        def example(inp, split_sizes_tensor, *, tag, ranks, group_size):
+            a2a = torch.ops.c10d_functional.all_to_all_single(
+                inp,
+                output_split_sizes=split_sizes_tensor,
+                input_split_sizes=split_sizes_tensor,
+                tag=tag,
+                ranks=ranks,
+                group_size=group_size,
+            )
+            a2a = torch.ops.c10d_functional.wait_tensor(a2a)
+            return a2a
+
+        with _dynamo_dist_per_rank_init(self.rank, self.world_size), _dynamo_dynamic_shapes():
+            row = self.world_size * (self.rank + 1) * (self.world_size + 1) / 2
+            split_sizes_tensor = torch.tensor(
+                [(i + 1) * (self.rank + 1) for i in range(self.world_size)],
+                dtype=torch.int64,
+                device="cuda",
+            ).to("cuda")
+            inputs = (torch.ones(int(row), 5, device="cuda") * (self.rank + 1), split_sizes_tensor)
+            trs = self.get_world_trs()
+
+            eager_out = example(*inputs, **trs)
+            compiled_fn = torch.compile(example, fullgraph=True, dynamic=True)
+            inductor_out = compiled_fn(*inputs, **trs)
+            self.assertTrue(same(eager_out, inductor_out, tol=0.001))
+
+    @unittest.skipIf(not has_triton(), "Inductor+gpu needs triton and recent GPU arch")
+    @skip_if_lt_x_gpu(2)
+    # TODO: somehow inductor bg compile threads are causing hangs at exit with distributed work dtor
+    @patch.object(torch._inductor.config, "compile_threads", 1)
+    def test_all_to_all_single_inductor_split_sizes_none(self):
+        def example(inp, *, tag, ranks, group_size):
+            a2a = torch.ops.c10d_functional.all_to_all_single(
+                inp,
+                output_split_sizes=None,
+                input_split_sizes=None,
+                tag=tag,
+                ranks=ranks,
+                group_size=group_size,
+            )
+            a2a = torch.ops.c10d_functional.wait_tensor(a2a)
+            return a2a
+
+        with _dynamo_dist_per_rank_init(self.rank, self.world_size):
+            inputs = (torch.ones(self.world_size, self.world_size, device="cuda") * (self.rank + 1),)
+            trs = self.get_world_trs()
+
+            eager_out = example(*inputs, **trs)
+            compiled_fn = torch.compile(example, fullgraph=True, dynamic=True)
+            inductor_out = compiled_fn(*inputs, **trs)
             self.assertTrue(same(eager_out, inductor_out, tol=0.001))
 
 

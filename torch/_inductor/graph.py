@@ -194,6 +194,8 @@ class GraphLowering(torch.fx.Interpreter):
         self.unaligned_buffers: Set[str] = set()
         self.name_to_buffer: Dict[str, ir.ComputedBuffer] = {}
         self.name_to_users: DefaultDict[str, List[ir.IRNode]] = defaultdict(list)
+        self.name_to_dtype: Dict[str, torch.dtype] = {}
+        self.data_dep_symbol_to_expr_str: Dict[str, str] = {}
         self.creation_time = time.time()
         self.name = "GraphLowering"
         self.cpp_wrapper = cpp_wrapper

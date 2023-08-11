@@ -1712,7 +1712,7 @@ class Layout(IRNode):
         ), f"size={size}, stride={stride}"
         self.device = device
         self.dtype = dtype
-        assert all(isinstance(s, (Expr, int)) for s in size)
+        assert all(isinstance(s, (Expr, int)) or str(s) in V.graph.data_dep_symbol_to_expr_str for s in size)
         self.size = size
         self._stride = stride
         self.offset = offset
@@ -2808,8 +2808,9 @@ class ExternKernel(InputsKernel):
 
     @classmethod
     def require_stride_order(cls, x, order):
-        if x.get_numel() == 0:  # Layout doesn't matter
-            return x
+        if not any([str(s) in V.graph.data_dep_symbol_to_expr_str for s in x.get_size()]):
+            if x.get_numel() == 0:  # Layout doesn't matter
+                return x
 
         # require x to have the layout as strided_ordered as order
         if is_storage_and_layout(x):
@@ -5258,6 +5259,105 @@ class ReduceScatterTensorCoalesced(OutOfPlaceCollectiveKernel):
             f"output_tensors={output_name}, "
             f"input_tensors={output_name}_inputs, "
             f"op=fun_col_impl._str_to_reduce_op('{str(self.reduce_op)}'), "
+            f"group={output_name}_pg, "
+            "async_op=True)"
+        )
+
+
+class AllToAllSingle(OutOfPlaceCollectiveKernel):
+    count = itertools.count()
+
+    def __init__(
+        self, layout, inputs, outputs, constant_args,
+        inputs_allow_none,
+        output_split_sizes_sum_s=None,
+    ):
+        super().__init__(layout, inputs, outputs, constant_args)
+        self.inputs_allow_none = inputs_allow_none
+        self.output_split_sizes_sum_s = output_split_sizes_sum_s
+
+    @classmethod
+    def create(
+        cls,
+        x: "TensorBox",
+        output_split_sizes: Optional["TensorBox"],
+        input_split_sizes: Optional["TensorBox"],
+        tag: str,
+        ranks: List[int],
+        group_size: int,
+    ):
+        x_realized = cls.realize_input(x)
+        inputs_allow_none = []
+        output_split_sizes_realized = None
+        if output_split_sizes is not None:
+            output_split_sizes_realized = cls.realize_input(output_split_sizes)
+            # TODO(yf225): ideally we should use the same dtype as `output_split_sizes`
+            # (instead of hardcoding int64), but we need to find a way to know `output_split_sizes` dtype.
+            V.graph.name_to_dtype[output_split_sizes_realized.data.name] = torch.int64
+        input_split_sizes_realized = None
+        if input_split_sizes is not None:
+            input_split_sizes_realized = cls.realize_input(input_split_sizes)
+            # TODO(yf225): ideally we should use the same dtype as `input_split_sizes`
+            # (instead of hardcoding int64), but we need to find a way to know `input_split_sizes` dtype.
+            V.graph.name_to_dtype[input_split_sizes_realized.data.name] = torch.int64
+        inputs_allow_none = [x_realized, output_split_sizes_realized, input_split_sizes_realized]
+        inputs = [inp for inp in inputs_allow_none if inp is not None]
+
+        outputs = []
+        new_size = x_realized.get_size()
+        output_split_sizes_sum_s = None
+        if output_split_sizes is not None:
+            output_split_sizes_sum_s = V.graph.current_node.meta['val'].size()[0]
+            new_size[0] = output_split_sizes_sum_s
+            # FlexibleLayout ctor used below needs to know which sizevar in output size
+            # is okay to skip the `isinstance(s, (Expr, int))` check for.
+            V.graph.data_dep_symbol_to_expr_str[str(output_split_sizes_sum_s)] = None
+
+        buff = OutputBuffer(
+            layout=FlexibleLayout(
+                device=x_realized.get_device(),
+                dtype=x_realized.get_dtype(),
+                size=new_size,
+            ),
+        )
+        outputs.append(buff)
+
+        layout = MultiOutputLayout(inputs[0].get_device())
+
+        packed = AllToAllSingle(
+            layout=layout,
+            inputs=inputs,
+            outputs=outputs,
+            constant_args=[tag, ranks, group_size],
+            inputs_allow_none=inputs_allow_none,
+            output_split_sizes_sum_s=output_split_sizes_sum_s,
+        )
+
+        return cls.create_output_nodes(packed, outputs)[0]
+
+    def codegen_collective(self, wrapper, output_name, input_names):
+        # When output_split_sizes is specified, output shape of all_to_all_single is
+        # data-dependent on output_split_sizes, so we store the shape computation formula
+        # and during codegen time write it before output buffer allocation.
+        if self.output_split_sizes_sum_s is not None:
+            assert str(self.output_split_sizes_sum_s) in V.graph.data_dep_symbol_to_expr_str
+            V.graph.data_dep_symbol_to_expr_str[str(self.output_split_sizes_sum_s)] = f"{input_names[1]}.sum().item()"
+        # TODO(yf225): add unit test for:
+        # 1. only output_split_sizes not None
+        # 2. only input_split_sizes not None
+        input_strs = [f"{output_name}_inputs[0]"]
+        for i in range(1, len(self.inputs_allow_none)):
+            inp = self.inputs_allow_none[i]
+            if inp is None:
+                input_strs.append("None")
+            else:
+                input_strs.append(f"{output_name}_inputs[{self.original_inputs.index(inp)}].tolist()")
+        wrapper.writeline(
+            f"{output_name}_work = dist.all_to_all_single("
+            f"output={output_name}[0], "
+            f"input={input_strs[0]}, "
+            f"output_split_sizes={input_strs[1]}, "
+            f"input_split_sizes={input_strs[2]}, "
             f"group={output_name}_pg, "
             "async_op=True)"
         )
