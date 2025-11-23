@@ -66,6 +66,8 @@ def pad_sequence(
     batch_first: bool = False,
     padding_value: float = 0.0,
     padding_side: Literal["left", "right"] = "right",
+    *,
+    out: Tensor | None = None,
 ) -> Tensor: ...
 
 # Upsample functions used by torch.nn.functional.interpolate

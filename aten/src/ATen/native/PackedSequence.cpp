@@ -1,3 +1,4 @@
+#include <c10/core/TensorImpl.h>
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/core/Tensor.h>
 
@@ -203,7 +204,7 @@ std::tuple<Tensor, Tensor> _pad_packed_sequence(const Tensor& data, const Tensor
   return std::make_tuple(output, lengths_t);
 }
 
-Tensor pad_sequence(TensorList sequences, bool batch_first, double padding_value, const std::string_view padding_side) {
+Tensor pad_sequence(TensorList sequences, bool batch_first, double padding_value, const std::string_view padding_side, const std::optional<Tensor>& out) {
   const int64_t sequences_size = sequences.size();
   TORCH_CHECK(sequences_size > 0, "received an empty list of sequences");
   TORCH_CHECK(padding_side == "left" || padding_side == "right",
@@ -226,19 +227,35 @@ Tensor pad_sequence(TensorList sequences, bool batch_first, double padding_value
   }
   out_dims.insert(out_dims.end(), trailing_dims.begin(), trailing_dims.end());
 
-  Tensor out = at::full(out_dims, padding_value, sequences[0].options());
+  Tensor out_tensor;
+  if (out.has_value()) {
+    out_tensor = out.value();
+    TORCH_CHECK(out_tensor.sizes() == out_dims,
+                "Expected out tensor to have size ", out_dims, ", but got ", out_tensor.sizes(), ".");
+    TORCH_CHECK(out_tensor.device() == sequences[0].device(),
+                "Expected out tensor to be on device ", sequences[0].device().str(), ", but got ", out_tensor.device().str(), ".");
+    TORCH_CHECK(out_tensor.scalar_type() == sequences[0].scalar_type(),
+                "Expected out tensor to have type ", sequences[0].scalar_type(), ", but got ", out_tensor.scalar_type(), ".");
+    out_tensor.fill_(padding_value);
+  } else {
+    out_tensor = at::full(out_dims, padding_value, sequences[0].options());
+    // out_tensor = at::empty(out_dims, sequences[0].options());
+  }
+
   for (const auto i : c10::irange(sequences_size)) {
     const Tensor& currseq = sequences[i];
     const int64_t length_i = currseq.size(0);
     const int64_t start = padding_side == "left" ? max_len - length_i : 0;
     // use index notation to prevent duplicate references to the tensor
     if (batch_first) {
-      out.select(0, i).narrow(0, start, length_i).copy_(currseq);
+      out_tensor.select(0, i).narrow(0, start, length_i).copy_(currseq);
+      // out_tensor.select(0, i).narrow(0, start + 1, max_len - length_i).fill_(padding_value);
     } else {
-      out.narrow(0, start, length_i).select(1, i).copy_(currseq);
+      out_tensor.narrow(0, start, length_i).select(1, i).copy_(currseq);
+      // out_tensor.narrow(0, 0, start).select(1, i).fill_(padding_value);
     }
   }
-  return out;
+  return out_tensor;
 }
 
 } // namespace at::native

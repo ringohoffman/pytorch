@@ -9758,9 +9758,9 @@ dedent """
     def test_script_pad_sequence_pack_sequence(self):
         from torch.nn.utils.rnn import pad_sequence, pack_sequence, pad_packed_sequence
 
-        def pad_sequence_func(tensor_list, batch_first=False, padding_value=0.0, padding_side="right"):
-            # type: (List[Tensor], bool, float, str) -> Tensor
-            return pad_sequence(tensor_list, batch_first, padding_value, padding_side)
+        def pad_sequence_func(tensor_list, batch_first=False, padding_value=0.0, padding_side="right", *, out=None):
+            # type: (List[Tensor], bool, float, str, *, Optional[Tensor]) -> Tensor
+            return pad_sequence(tensor_list, batch_first, padding_value, padding_side, out=out)
 
         def pack_sequence_func(tensor_list, enforce_sorted=True):
             # type: (List[Tensor], bool) -> Tensor

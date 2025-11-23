@@ -307,8 +307,10 @@ inline Tensor pad_sequence(
     ArrayRef<Tensor> sequences,
     bool batch_first = false,
     double padding_value = 0,
-    std::string_view padding_side = "right") {
-  return at::pad_sequence(sequences, batch_first, padding_value, padding_side);
+    std::string_view padding_side = "right",
+    const std::optional<Tensor>& out = std::nullopt) {
+  return at::pad_sequence(
+      sequences, batch_first, padding_value, padding_side, out);
 }
 
 /// Packs a list of variable length Tensors
